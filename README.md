@@ -221,8 +221,8 @@ CI, `.github/workflows/tests.yml`:
 
 ## credits
 
-Code: [shefow and claude sonnet 5.5](https://github.com/shefow. Idea: [psychobye](https://github.com/psychobye),
-[psychobye/fuckbr](https://github.com/psychobye/fuckbr).
+Code: [shefow and claude sonnet 5.5]
+Idea: [psychobye]
 
 ## license
 
