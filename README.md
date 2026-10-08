@@ -3,15 +3,12 @@
 ![tests](tests.svg) ![coverage](coverage.svg)
 
 Tools for the game files of Black Russia: textures, archives, collision files and
-animations. Plain python with numpy and pillow, no compiled codecs, so it runs in
-termux on the phone itself.
+animations. Plain python, no compiled codecs, so it runs in termux on the phone itself.
 
 The idea is from [psychobye/fuckbr](https://github.com/psychobye/fuckbr). This is not a
 fork, only the idea is taken, the code is mine ([shefow](https://github.com/shefow)).
 
-Unofficial. Not affiliated with the game's developers, no game files in here. Use it on
-your own copy for modding and poking around, not for cheating or getting around any
-protection.
+Unofficial, not affiliated with the game's developers. No game files in here.
 
 | tool | what it does |
 |------|--------------|
@@ -22,7 +19,8 @@ protection.
 | `ani.py` | ANP3 animations `.ani` to `.ifp` and back |
 
 `common.py`, `arr.py`, `astc.py` and `etc2.py` are the shared parts, not tools.
-`badge.py` is for the repo only, it draws the two badges above (see tests).
+`badge.py` (draws the two badges above) and `pushrepo.py` (git add, commit, push) are
+for the repo only.
 
 A usual round trip: `bpc.py pack.bpc`, edit what you need (`btx.py` for textures,
 `cls.py` for collisions, `ani.py` for animations), `bpc.py pack/ -m`, then
@@ -30,7 +28,9 @@ A usual round trip: `bpc.py pack.bpc`, edit what you need (`btx.py` for textures
 
 ## install
 
-Python 3.8+, numpy (or rsnumpy), pillow. Only `btx.py` needs pillow.
+Python 3.8+. Only `btx.py` needs numpy (or rsnumpy) and pillow, everything else is the
+standard library. `bpc.py` uses numpy for big archives if it is there, and works
+without it.
 
     pip install numpy pillow
 
@@ -40,15 +40,20 @@ On termux: `pkg install python-numpy`, then `pip install pillow`.
 
 Every tool takes one or more inputs, expands wildcards itself (windows and some
 android shells won't), puts results next to the sources unless you give `-o`, and
-exits with 1 if anything failed.
+exits with 1 if anything failed or nothing was found to convert.
 
-- `-o PATH` is the output file for one input, or the output folder for several.
+- `-o PATH` is the output file for one input file, or the output folder otherwise.
+  Folders keep their inner structure under it.
 - `-j N` is the number of workers, default all cores but at most 8.
-- Writes are atomic, a failed conversion never leaves half a file behind.
-- `btx.py` and `cls.py` also take a folder (searched at any depth) or a zip / `.bpc`.
-  Matching members are converted, nested zips too. A zip is rewritten in place and the
-  old one is kept as `FILE.bak`. Members that fail are copied over untouched and
+- Files are written atomically (temp file, then rename), a failed conversion never
+  leaves half a file behind. Unpacking a `.bpc` into a folder is not atomic.
+- With more than one file you get a `converted / failed / skipped` line at the end.
+- `btx.py` and `cls.py` also take a folder (searched at any depth, by extension only)
+  or a zip / `.bpc`. Matching members are converted, nested zips too. A member is
+  skipped if its converted name is already in the zip. A zip is rewritten in place and
+  the old one is kept as `FILE.bak`. Members that fail are copied over untouched and
   reported. A `.bpc` is read as a plain zip here, if it is encrypted run `bpc.py` first.
+- `ani.py` takes files and folders, but does not open zips.
 
 ## btx.py
 
@@ -61,15 +66,18 @@ exits with 1 if anything failed.
 
 - `-a` / `--astc`, `-e` / `--etc2`, `-r` / `--rgba8`: PNG -> BTX in that format.
   Mandatory for PNG input. Without one it is BTX -> PNG.
-- `-b WxH`: ASTC block size, one of the 14 standard LDR ones, default 6x6.
-- `-m N`: mip levels, box filtered.
+- `-b WxH`: ASTC block size, one of the 14 standard LDR ones, default 6x6. Only with
+  `--astc`.
+- `-m N`: mip levels, box filtered. Default 1, or the original count when the PNG
+  came from a btx of the same format.
 - `--fast`: skip the decode self check after encoding.
 
-BTX -> PNG keeps the original btx (zlib) in a private `btXt` chunk and a hash of the
-decoded pixels in `btXh`. Convert an unedited PNG back to the same format and you get
-the original file byte for byte ("original restored 1:1"). Edited PNG: it re-encodes
-and reuses the original header (block size, sRGB flag, mip count, key/value data,
-trailing bytes).
+BTX -> PNG writes the top mip level only. It keeps the whole original btx (zlib) in a
+private `btXt` chunk and a hash of the decoded pixels in `btXh`. Convert an untouched
+PNG back to the same format and size and you get the original file byte for byte
+("original restored 1:1"). Edited PNG: it re-encodes and reuses the original header
+(block size, sRGB flag, mip count, key/value data, trailing bytes) when the format is
+the same. Another format gets a fresh header.
 
 KTX supported: 2D, little endian, ASTC LDR (UNORM and sRGB, 4x4 to 12x12), ETC2 RGB8 /
 RGBA8 and RGBA8. Up to 16 stray bytes before the KTX signature are kept.
@@ -84,7 +92,8 @@ RGBA8 and RGBA8. Up to 16 stray bytes before the KTX signature are kept.
 
 What happens depends on the input: a `.bpc` is unpacked, a folder is packed, a `.zip`
 is encrypted, `-z` decrypts a `.bpc` to a zip instead. Zip contents are CRC checked
-while converting, `--fast` skips that. The XOR is obfuscation, not security.
+while converting, `--fast` skips that. Without `-m` a folder is packed deflated, with
+dir entries. The XOR is obfuscation, not security.
 
 ## bpcmeta.py
 
@@ -93,10 +102,13 @@ while converting, `--fast` skips that. The XOR is obfuscation, not security.
     bpcmeta.py folder/               -> folder.bpcmeta, for a folder packed with bpc.py -m
     bpcmeta.py a.bpc b.bpc -o metas/
 
-The archive has to be stored, not compressed: `bpc.py -m` makes one. Layout, little
-endian: `u32 count`, then per entry `u32 offset`, `u32 size`, `u8 tag` (`.wav` 0,
-`.mp3` 1), `u16 name length`, utf-8 name. The index is checked (safe relative paths, no
-duplicates, sorted, contiguous offsets) and parsed back before it is written.
+The archive has to be stored, not compressed: `bpc.py -m` makes one. For a folder the
+layout is worked out without writing the archive, so pack that same folder with
+`bpc.py -m` afterwards. Only `.wav` and `.mp3` files are accepted, any other extension
+is an error. Layout, little endian: `u32 count`, then per entry `u32 offset`,
+`u32 size`, `u8 tag` (`.wav` 0, `.mp3` 1), `u16 name length`, utf-8 name. The index is
+checked (safe relative paths, no duplicates, sorted, contiguous offsets) and parsed back
+before it is written. `--fast` skips the CRC check of the archive.
 
 ## cls.py
 
@@ -105,8 +117,11 @@ duplicates, sorted, contiguous offsets) and parsed back before it is written.
     cls.py models/ --cls -o out/     folder, zip or .bpc: say the way with --cls or --col
     cls.py models/ --cls -b          drop spheres, boxes and meshes instead of failing
 
-Only COL1 (`COLL`) is read and only names and bounds are kept. A model with geometry is
-refused unless you pass `-b`, which drops the geometry.
+Only COL1 (`COLL`) is read and only names and bounds (radius, center, min, max) are
+kept. A model with geometry is refused unless you pass `-b` (with `--cls` only), which
+drops the geometry. Names are ASCII, up to 19 characters for CLS. A CLS record is
+`CLST`, a 20 byte name, `CED2`, the bounds and 48 zero bytes. A CLS with anything in
+those 48 bytes is refused, CLS -> COL writes models without geometry.
 
 ## ani.py
 
@@ -114,8 +129,9 @@ refused unless you pass `-b`, which drops the geometry.
     ani.py walk.ifp                  -> walk.ani
     ani.py anims/ --ifp -o out/      folder: say the way with --ifp or --ani
 
-Only the 36 byte ANP3 header differs. The last 4 bytes of the 24 byte name don't
-survive ani -> ifp, same as always.
+Only the 36 byte ANP3 header differs. The input must have the right type field
+(`0x126`) and a size field equal to the file size minus 8, or it is refused. The last
+4 bytes of the 24 byte name don't survive ani -> ifp, same as always.
 
 ## environment
 
@@ -140,33 +156,39 @@ survive ani -> ifp, same as always.
 ## tests
 
 343 tests, one file, only `unittest`. Every input (zip, `.bpc`, png, ktx, col/cls,
-ani/ifp) is generated on the fly, nothing to check in next to it.
+ani/ifp) is generated on the fly, nothing to check in next to it. The tests always run
+on the numpy backend.
 
-    python -m unittest discover -s tests -p "test_all.py" -v
-    python -m pytest tests/test_all.py
+    python -m unittest test_all -v
+    python -m pytest test_all.py
 
-Put `test_all.py` next to the scripts, or in a `tests/` folder one level below.
+Put `test_all.py` next to the scripts, or in a `tests/` folder one level below (then
+`python -m unittest discover -s tests -p "test_all.py" -v`).
 
-Line coverage, 2271 of 2272 lines (99.96%):
+Coverage, statements of the tools (2031 of 2032, 99.95%):
 
-| module | lines |
-|--------|------:|
-| common.py | 252 / 252 |
-| arr.py | 25 / 25 |
-| ani.py | 55 / 55 |
-| bpc.py | 215 / 215 |
-| bpcmeta.py | 177 / 177 |
-| cls.py | 165 / 165 |
-| btx.py | 295 / 295 |
-| astc.py | 688 / 689 |
-| etc2.py | 329 / 329 |
-| badge.py | 70 / 70 |
+| module | statements |
+|--------|-----------:|
+| common.py | 249 / 249 |
+| arr.py | 23 / 23 |
+| ani.py | 51 / 51 |
+| bpc.py | 208 / 208 |
+| bpcmeta.py | 169 / 169 |
+| cls.py | 142 / 142 |
+| btx.py | 236 / 236 |
+| astc.py | 591 / 592 |
+| etc2.py | 304 / 304 |
+| badge.py | 58 / 58 |
 
 The one line left is `raise ValueError("bad quant mode")` in `astc.decode_block_mode`.
 It can't fire: for every 11 bit block mode `quant_mode` is always 0..11, a test tries
-all 2048 modes to prove it. Exclude it and coverage is 100%:
+all 2048 modes to prove it. Exclude it and coverage is 100%. `test_all.py` itself is
+left out of the report too, otherwise its own unrun lines count against it:
 
     # .coveragerc
+    [run]
+    omit = test_all.py
+
     [report]
     exclude_lines =
         pragma: no cover
@@ -175,7 +197,7 @@ all 2048 modes to prove it. Exclude it and coverage is 100%:
 Lines only, branches are not tracked. The table above is static, rerun to refresh it:
 
     pip install coverage
-    coverage run -m unittest discover -s tests -p "test_all.py"
+    coverage run -m unittest test_all
     coverage report -m
 
 The badges at the top are not static, `badge.py` makes them from a saved test run:
@@ -210,7 +232,7 @@ CI, `.github/workflows/tests.yml`:
             with:
               python-version: ${{ matrix.python-version }}
           - run: pip install numpy pillow coverage
-          - run: coverage run -m unittest discover -s tests -p "test_all.py"
+          - run: coverage run -m unittest test_all
           - run: coverage report -m --fail-under=100
 
 ## made and tested on
